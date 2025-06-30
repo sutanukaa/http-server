@@ -1,19 +1,35 @@
 #include <stdio.h>
 #include <stdlib.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <netinet/ip.h>
 #include <string.h>
 #include <errno.h>
-#include <unistd.h>
+
+#ifdef _WIN32
+    #include <winsock2.h>
+    #include <ws2tcpip.h>
+    #pragma comment(lib, "ws2_32.lib")
+#else
+    #include <sys/socket.h>
+    #include <netinet/in.h>
+    #include <netinet/ip.h>
+    #include <unistd.h>
+#endif
 
 int main() {
-	// Disable output buffering
-	setbuf(stdout, NULL);
- 	setbuf(stderr, NULL);
+    // Disable output buffering
+    setbuf(stdout, NULL);
+    setbuf(stderr, NULL);
 
-	// You can use print statements as follows for debugging, they'll be visible when running tests.
-	printf("Logs from your program will appear here!\n");
+    // You can use print statements as follows for debugging, they'll be visible when running tests.
+    printf("Logs from your program will appear here!\n");
+
+#ifdef _WIN32
+    // Initialize Winsock on Windows
+    WSADATA wsaData;
+    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+        fprintf(stderr, "WSAStartup failed\n");
+        return 1;
+    }
+#endif
 
 	// Uncomment this block to pass the first stage
 	
@@ -27,7 +43,7 @@ int main() {
 	 }
 	
 	// // Since the tester restarts your program quite often, setting SO_REUSEADDR
-	 ensures that we don't run into 'Address already in use' errors
+	 // ensures that we don't run into 'Address already in use' errors
 	 int reuse = 1;
 	 if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0) {
 	 	printf("SO_REUSEADDR failed: %s \n", strerror(errno));
@@ -58,5 +74,9 @@ int main() {
 	
 	 close(server_fd);
 
-	return 0;
+#ifdef _WIN32
+    WSACleanup();
+#endif
+    
+    return 0;
 }
