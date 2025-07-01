@@ -14,7 +14,16 @@ set -e # Exit early if any commands fail
 # - Edit .codecrafters/compile.sh to change how your program compiles remotely
 (
   cd "$(dirname "$0")" # Ensure compile steps are run within the repository directory
-  cmake -B build -S . -DCMAKE_TOOLCHAIN_FILE=${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake
+  
+  # Clean build directory if it exists
+  if [ -d "build" ]; then
+    rm -rf build/*
+  fi
+  
+  # Configure with MinGW Makefiles generator
+  cmake -B build -S . -G "MinGW Makefiles"
+  
+  # Build the project
   cmake --build ./build
 )
 
@@ -22,4 +31,4 @@ set -e # Exit early if any commands fail
 #
 # - Edit this to change how your program runs locally
 # - Edit .codecrafters/run.sh to change how your program runs remotely
-exec $(dirname $0)/build/http-server "$@"
+exec $(dirname $0)/build/http-server.exe "$@"
