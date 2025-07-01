@@ -90,7 +90,8 @@ int main() {
     
     printf("Waiting for a client to connect...\n");
     client_addr_len = sizeof(client_addr);
-    
+
+
     int client_fd = accept(server_fd, (struct sockaddr *) &client_addr, &client_addr_len);
     if (client_fd < 0) {
 #ifdef _WIN32
@@ -100,7 +101,28 @@ int main() {
 #endif
     } else {
         printf("Client connected\n");
-        send(client_fd, "HTTP/1.1 200 OK\r\n\r\n", 19, 0);
+        
+        // Read the HTTP request
+        char read_buffer[1024];
+        memset(read_buffer, 0, sizeof(read_buffer));
+        int bytes_read = recv(client_fd, read_buffer, sizeof(read_buffer) - 1, 0);
+        
+        if (bytes_read > 0) {
+            printf("Received request:\n%s\n", read_buffer);
+            
+            // Check if it's a GET request for root path
+            if (strstr(read_buffer, "GET / ") != NULL) {
+                // Send 200 OK response
+                send(client_fd, "HTTP/1.1 200 OK\r\n\r\n", 19, 0);
+                printf("Sent 200 OK response\n");
+            } else {
+                // Send 404 Not Found response
+                const char* not_found_response = "HTTP/1.1 404 Not Found\r\n\r\n";
+                send(client_fd, not_found_response, strlen(not_found_response), 0);
+                printf("Sent 404 Not Found response\n");
+            }
+        }
+        
         close(client_fd);
     }
     
