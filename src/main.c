@@ -136,7 +136,47 @@ send(client_fd, response, strlen(response), 0);
                     sprintf(response, "HTTP/1.1 200 OK\r\n\r\n%s", user_agent);
                     send(client_fd, response, strlen(response), 0);
                     printf("Sent User-Agent response: %s\n", user_agent);
-                } else {
+                } 
+            }
+                else if (strstr(read_buffer,"GET /files/")!=NULL) {
+                    char *name = strstr(read_buffer, "GET /files/");
+                    if (name) {
+                        name+=strlen("GET /files/");
+                        char *end = strstr(name, " ");
+                        if (end) {
+                            *end = '\0';  // Null-terminate the filename
+                        }
+                        // Open the requested file
+                        // Build full path first
+                            char filepath[512];
+                            sprintf(filepath, "/tmp/%s", name);  // Now opens "/tmp/foo"
+                            FILE *file = fopen(filepath, "rb");
+                        if (file) {
+                            // Get file size
+                            fseek(file, 0, SEEK_END);
+                            long file_size = ftell(file);
+                            fseek(file, 0, SEEK_SET);
+                            char* file_content = malloc(file_size);
+                            fread(file_content, 1, file_size, file);
+                            char response[1024];
+                            sprintf(response, "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: %ld\r\n\r\n", file_size);
+                            fclose(file);
+                            // Send file content
+                            send(client_fd, response, strlen(response), 0);  // Send headers
+                            send(client_fd, file_content, file_size, 0);   // Send raw file content
+                            free(file_content);
+                            printf("Sent file: %s\n", name);
+                        } else {
+                            // Send 404 Not Found response if file not found
+                            const char* not_found_response = "HTTP/1.1 404 Not Found\r\n\r\n";
+                            send(client_fd, not_found_response, strlen(not_found_response), 0);
+                            printf("Sent 404 Not Found response for file: %s\n", name);
+                        }
+                    }
+                } 
+                
+                
+                else {
                     // Send 404 Not Found response if User-Agent not found
                     const char* not_found_response = "HTTP/1.1 404 Not Found\r\n\r\n";
                     send(client_fd, not_found_response, strlen(not_found_response), 0);
