@@ -91,13 +91,16 @@ int main() {
     printf("Waiting for a client to connect...\n");
     client_addr_len = sizeof(client_addr);
 
+    while (1){
 
     int client_fd = accept(server_fd, (struct sockaddr *) &client_addr, &client_addr_len);
     if (client_fd < 0) {
 #ifdef _WIN32
         printf("Accept failed: %d\n", WSAGetLastError());
+        continue;
 #else
         printf("Accept failed: %s\n", strerror(errno));
+        continue;
 #endif
     } else {
         printf("Client connected\n");
@@ -152,6 +155,7 @@ send(client_fd, response, strlen(response), 0);
         
         close(client_fd);
     }
+}
     
     close(server_fd);
 
