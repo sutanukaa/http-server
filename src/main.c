@@ -113,9 +113,36 @@ int main() {
             // Check if it's a GET request for root path
             if (strstr(read_buffer, "GET / ") != NULL) {
                 // Send 200 OK response
-                send(client_fd, "HTTP/1.1 200 OK\r\n\r\n", 19, 0);
-                printf("Sent 200 OK response\n");
-            } else {
+                const char* message = "Hello, World!";
+char response[1024];
+sprintf(response, "HTTP/1.1 200 OK\r\n\r\n%s", message);
+send(client_fd, response, strlen(response), 0);
+            } 
+            else if (strstr(read_buffer, "GET /user-agent") != NULL) {
+                // Extract User-Agent header
+                char* user_agent = strstr(read_buffer, "User-Agent: ");
+                if (user_agent) {
+                    user_agent += strlen("User-Agent: ");
+                    char* end_of_line = strstr(user_agent, "\r\n");
+                    if (end_of_line) {
+                        *end_of_line = '\0';  // Null-terminate the User-Agent string
+                    }
+                    
+                    // Send 200 OK response with User-Agent
+                    char response[1024];
+                    sprintf(response, "HTTP/1.1 200 OK\r\n\r\n%s", user_agent);
+                    send(client_fd, response, strlen(response), 0);
+                    printf("Sent User-Agent response: %s\n", user_agent);
+                } else {
+                    // Send 404 Not Found response if User-Agent not found
+                    const char* not_found_response = "HTTP/1.1 404 Not Found\r\n\r\n";
+                    send(client_fd, not_found_response, strlen(not_found_response), 0);
+                    printf("Sent 404 Not Found response\n");
+                }
+            }
+            
+            
+            else {
                 // Send 404 Not Found response
                 const char* not_found_response = "HTTP/1.1 404 Not Found\r\n\r\n";
                 send(client_fd, not_found_response, strlen(not_found_response), 0);
