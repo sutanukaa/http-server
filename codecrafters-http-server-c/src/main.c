@@ -16,7 +16,23 @@
     #include <unistd.h>
 #endif
 
-int main() {
+int main(int argc, char *argv[]) {
+    char *directory = NULL;
+    for (int i =1;i<argc; i++){
+        if(strcmp(argv[i], "--directory")==0){
+            if (i + 1 < argc) {
+                directory = argv[i + 1];
+                i++; // Skip the next argument as it's the directory path
+            } 
+        }
+    }
+    if (directory==NULL) {
+        directory = "/tmp"; // Default directory if not provided
+    }
+    // Print the directory to verify
+    printf("Using directory: %s\n", directory);
+
+
     // Disable output buffering
     setbuf(stdout, NULL);
     setbuf(stderr, NULL);
@@ -149,7 +165,7 @@ send(client_fd, response, strlen(response), 0);
                         // Open the requested file
                         // Build full path first
                             char filepath[512];
-                            sprintf(filepath, "/tmp/%s", name);  // Now opens "/tmp/foo"
+                            sprintf(filepath, "%s/%s", directory, name);  // Now opens "/tmp/foo"
                             FILE *file = fopen(filepath, "rb");
                         if (file) {
                             // Get file size
@@ -174,7 +190,57 @@ send(client_fd, response, strlen(response), 0);
                         }
                     }
                 } 
-                
+                else if (strstr(read_buffer, "POST /files/")!=NULL){
+                    char *filename_start = strstr(read_buffer, "POST /files/");
+                    if (filename_start){
+                        filename_start+= strlen("POST /files/");
+                        char *filename_end = strstr(filename_start, " ");
+                        if (filename_end) {
+                            *filename_end = '\0';  // Null-terminate the filename
+                        }
+                        // Extract the filename
+                        char *length_str = strstr(read_buffer, "Content-Length: ");
+                        int length = 0;
+                        if (length_str){
+                            length_str+= strlen("Content-Length: ");
+                            length = atoi(length_str);
+                        }
+                        printf("Content-Length: %d\n", length);
+                        
+                        // Finding request body
+                        char *body_start = strstr(read_buffer, "\r\n\r\n");
+                        if (body_start) {
+                            body_start+=4;
+                        }
+                        int body_read = bytes_read - (body_start - read_buffer);
+                        int remaining_length = length - body_read;
+                        char *body = malloc(length + 1);
+                        memcpy(body, body_start, body_read);
+                        if (remaining_length>0){
+                            int additional_byte = recv(client_fd, body + body_read, remaining_length, 0);
+                        }
+                        // Building the full path
+                        char filepath[512];
+                        sprintf(filepath, "%s/%s", directory, filename_start);  
+                        FILE *file = fopen(filepath, "wb");
+                        if (file){
+                            fwrite(body, 1, length, file);
+                            fclose(file);
+                            const char* response = "HTTP/1.1 201 Created\r\n\r\n";
+                            send(client_fd, response, strlen(response), 0);
+                            printf("File created: %s\n", filepath);
+                        } else {
+                            const char* error_response = "HTTP/1.1 500 Internal Server Error\r\n\r\n";
+                            send(client_fd, error_response, strlen(error_response), 0);
+                        }
+                        free(body);
+                    }
+                }
+
+
+
+
+
                 
                 else {
                     // Send 404 Not Found response if User-Agent not found
