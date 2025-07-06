@@ -16,6 +16,9 @@
     #include <unistd.h>
 #endif
 
+
+int check_gzip_support(char *accept_encoding_line);
+
 int main(int argc, char *argv[]) {
     char *directory = NULL;
     for (int i =1;i<argc; i++){
@@ -129,13 +132,11 @@ int main(int argc, char *argv[]) {
         if (bytes_read > 0) {
             printf("Received request:\n%s\n", read_buffer);
             
-            // Step 1: Check if client supports gzip compression
             int supports_gzip = 0;
             char *accept_encoding = strstr(read_buffer, "Accept-Encoding:");
             if (accept_encoding) {
-                // Check if gzip is mentioned in the Accept-Encoding header
-                if (strstr(accept_encoding, "gzip") != NULL) {
-                    supports_gzip = 1;
+                supports_gzip = check_gzip_support(accept_encoding);
+                if (supports_gzip) {
                     printf("Client supports gzip compression\n");
                 }
             }
@@ -305,4 +306,45 @@ send(client_fd, response, strlen(response), 0);
 #endif
     
     return 0;
+}
+
+// Check if gzip is in the comma-separated list
+int check_gzip_support(char *accept_encoding_line) {
+    
+    char *values_start = accept_encoding_line + strlen("Accept-Encoding:");
+    
+    
+    while (*values_start == ' ' || *values_start == '\t') {
+        values_start++;
+    }
+    
+    
+    char *current = values_start;
+    while (current && *current != '\r' && *current != '\n') {
+    
+        while (*current == ' ' || *current == '\t') {
+            current++;
+        }
+        
+        
+        if (strncmp(current, "gzip", 4) == 0) {
+        
+            char next_char = *(current + 4);
+            if (next_char == ',' || next_char == ' ' || next_char == '\t' || 
+                next_char == '\r' || next_char == '\n' || next_char == '\0') {
+                return 1; 
+            }
+        }
+        
+        while (*current != ',' && *current != '\r' && *current != '\n' && *current != '\0') {
+            current++;
+        }
+        
+        
+        if (*current == ',') {
+            current++;
+        }
+    }
+    
+    return 0; 
 }
