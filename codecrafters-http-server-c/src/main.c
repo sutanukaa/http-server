@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <zlib.h>
 
 #ifdef _WIN32
     #include <winsock2.h>
@@ -16,8 +17,8 @@
     #include <unistd.h>
 #endif
 
-
 int check_gzip_support(char *accept_encoding_line);
+int gzip_compress(const char* input, int input_len, char* output, int* output_len);
 
 int main(int argc, char *argv[]) {
     char *directory = NULL;
@@ -175,20 +176,40 @@ send(client_fd, response, strlen(response), 0);
                     *echo_end = '\0';  // Null-terminate the string
                 }
                 
-                // Build response with or without gzip encoding
                 char response[1024];
-                int content_length = strlen(echo_start);
                 
                 if (supports_gzip) {
-                    sprintf(response, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Encoding: gzip\r\nContent-Length: %d\r\n\r\n%s", 
-                            content_length, echo_start);
+                    // Compress the data
+                    char compressed[1024];
+                    int compressed_length = sizeof(compressed);
+                    
+                    if (gzip_compress(echo_start, strlen(echo_start), compressed, &compressed_length) == Z_OK) {
+                        // Compression successful
+                        int header_length = sprintf(response, 
+                            "HTTP/1.1 200 OK\r\n"
+                            "Content-Type: text/plain\r\n"
+                            "Content-Encoding: gzip\r\n"
+                            "Content-Length: %d\r\n\r\n", 
+                            compressed_length);
+                        
+                        send(client_fd, response, header_length, 0);
+                        send(client_fd, compressed, compressed_length, 0);
+                        printf("Sent gzip compressed echo response: %s (%d -> %d bytes)\n", 
+                               echo_start, (int)strlen(echo_start), compressed_length);
+                    } else {
+                        // Compression failed, send uncompressed
+                        sprintf(response, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s", 
+                                (int)strlen(echo_start), echo_start);
+                        send(client_fd, response, strlen(response), 0);
+                        printf("Compression failed, sent uncompressed echo response: %s\n", echo_start);
+                    }
                 } else {
+                    // Send uncompressed response
                     sprintf(response, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s", 
-                            content_length, echo_start);
+                            (int)strlen(echo_start), echo_start);
+                    send(client_fd, response, strlen(response), 0);
+                    printf("Sent uncompressed echo response: %s\n", echo_start);
                 }
-                
-                send(client_fd, response, strlen(response), 0);
-                printf("Sent echo response: %s (gzip: %s)\n", echo_start, supports_gzip ? "yes" : "no");
             }
             else if (strstr(read_buffer,"GET /files/")!=NULL) {
                     char *name = strstr(read_buffer, "GET /files/");
@@ -347,4 +368,35 @@ int check_gzip_support(char *accept_encoding_line) {
     }
     
     return 0; 
+}
+
+int gzip_compress(const char* input, int input_len, char* output, int* output_len) {
+    z_stream strm;
+    int ret;
+    
+    strm.zalloc = Z_NULL;
+    strm.zfree = Z_NULL;
+    strm.opaque = Z_NULL;
+    
+    // Initialize deflate with gzip format
+    ret = deflateInit2(&strm, Z_DEFAULT_COMPRESSION, Z_DEFLATED, 
+                      15 + 16, 8, Z_DEFAULT_STRATEGY);
+    if (ret != Z_OK) {
+        return ret; 
+    }
+    
+    strm.avail_in = input_len;
+    strm.next_in = (unsigned char*)input;
+    strm.avail_out = *output_len;
+    strm.next_out = (unsigned char*)output;
+    
+    ret = deflate(&strm, Z_FINISH);
+    if (ret != Z_STREAM_END) {
+        deflateEnd(&strm);
+        return ret; 
+    }
+    
+    *output_len = *output_len - strm.avail_out;
+    deflateEnd(&strm);
+    return Z_OK;
 }
