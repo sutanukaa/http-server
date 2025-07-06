@@ -129,6 +129,17 @@ int main(int argc, char *argv[]) {
         if (bytes_read > 0) {
             printf("Received request:\n%s\n", read_buffer);
             
+            // Step 1: Check if client supports gzip compression
+            int supports_gzip = 0;
+            char *accept_encoding = strstr(read_buffer, "Accept-Encoding:");
+            if (accept_encoding) {
+                // Check if gzip is mentioned in the Accept-Encoding header
+                if (strstr(accept_encoding, "gzip") != NULL) {
+                    supports_gzip = 1;
+                    printf("Client supports gzip compression\n");
+                }
+            }
+            
             // Check if it's a GET request for root path
             if (strstr(read_buffer, "GET / ") != NULL) {
                 // Send 200 OK response
@@ -154,7 +165,31 @@ send(client_fd, response, strlen(response), 0);
                     printf("Sent User-Agent response: %s\n", user_agent);
                 } 
             }
-                else if (strstr(read_buffer,"GET /files/")!=NULL) {
+            else if (strstr(read_buffer, "GET /echo/") != NULL) {
+                // Extract the string after /echo/
+                char *echo_start = strstr(read_buffer, "GET /echo/");
+                echo_start += strlen("GET /echo/");
+                char *echo_end = strstr(echo_start, " ");
+                if (echo_end) {
+                    *echo_end = '\0';  // Null-terminate the string
+                }
+                
+                // Build response with or without gzip encoding
+                char response[1024];
+                int content_length = strlen(echo_start);
+                
+                if (supports_gzip) {
+                    sprintf(response, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Encoding: gzip\r\nContent-Length: %d\r\n\r\n%s", 
+                            content_length, echo_start);
+                } else {
+                    sprintf(response, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s", 
+                            content_length, echo_start);
+                }
+                
+                send(client_fd, response, strlen(response), 0);
+                printf("Sent echo response: %s (gzip: %s)\n", echo_start, supports_gzip ? "yes" : "no");
+            }
+            else if (strstr(read_buffer,"GET /files/")!=NULL) {
                     char *name = strstr(read_buffer, "GET /files/");
                     if (name) {
                         name+=strlen("GET /files/");
