@@ -226,7 +226,15 @@ void handle_client_connection(int client_fd, char *directory) {
         
         // Check if client wants to keep connection open
         int will_keep_open = should_keep_connection_open(read_buffer);
-        const char* connection_header = will_keep_open ? "keep-alive" : "close";
+        
+        // Determine the connection header to send back
+        const char* connection_header;
+        if (will_keep_open) {
+            connection_header = "keep-alive";
+        } else {
+            connection_header = "close";
+            printf("Client requested connection close\n");
+        }
         
         // Check if it's a GET request for root path
         if (strstr(read_buffer, "GET / ") != NULL) {
@@ -484,8 +492,12 @@ int should_keep_connection_open(char *request) {
     // Check HTTP version first
     int is_http_11 = (strstr(request, "HTTP/1.1") != NULL);
     
-    // Check for Connection header
+    // Check for Connection header (case-insensitive)
     char *connection_header = strstr(request, "Connection:");
+    if (!connection_header) {
+        connection_header = strstr(request, "connection:");
+    }
+    
     if (connection_header) {
         // Move past "Connection:" and any whitespace
         connection_header += strlen("Connection:");
@@ -493,25 +505,28 @@ int should_keep_connection_open(char *request) {
             connection_header++;
         }
         
-        // Check if it contains "close"
-        if (strncmp(connection_header, "close", 5) == 0) {
+        // Check if it contains "close" (case-insensitive)
+        if (strncmp(connection_header, "close", 5) == 0 || strncmp(connection_header, "Close", 5) == 0) {
             char next_char = *(connection_header + 5);
             if (next_char == '\r' || next_char == '\n' || next_char == ' ' || 
                 next_char == '\t' || next_char == '\0') {
+                printf("Found Connection: close header\n");
                 return 0; // Close connection
             }
         }
         
-        // Check if it contains "keep-alive"
-        if (strncmp(connection_header, "keep-alive", 10) == 0) {
+        // Check if it contains "keep-alive" (case-insensitive)
+        if (strncmp(connection_header, "keep-alive", 10) == 0 || strncmp(connection_header, "Keep-Alive", 10) == 0) {
             char next_char = *(connection_header + 10);
             if (next_char == '\r' || next_char == '\n' || next_char == ' ' || 
                 next_char == '\t' || next_char == '\0') {
+                printf("Found Connection: keep-alive header\n");
                 return 1; // Keep connection open
             }
         }
     }
     
     // Default behavior: keep connection open for HTTP/1.1, close for HTTP/1.0
+    printf("No explicit Connection header, using HTTP version default (HTTP/1.1: %d)\n", is_http_11);
     return is_http_11 ? 1 : 0;
 }
