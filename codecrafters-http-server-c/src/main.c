@@ -7,6 +7,7 @@
 #ifdef _WIN32
     #include <winsock2.h>
     #include <ws2tcpip.h>
+    #include <windows.h>
     #pragma comment(lib, "ws2_32.lib")
     typedef int socklen_t;
     #define close closesocket
@@ -15,11 +16,25 @@
     #include <netinet/in.h>
     #include <netinet/ip.h>
     #include <unistd.h>
+    #include <pthread.h>
 #endif
 
 int check_gzip_support(char *accept_encoding_line);
 int gzip_compress(const char* input, int input_len, char* output, int* output_len);
 int should_keep_connection_open(char *request);
+void handle_client_connection(int client_fd, char *directory);
+
+#ifdef _WIN32
+DWORD WINAPI client_thread(LPVOID arg);
+#else
+void* client_thread(void* arg);
+#endif
+
+// Structure to pass data to thread
+typedef struct {
+    int client_fd;
+    char *directory;
+} client_data_t;
 
 int main(int argc, char *argv[]) {
     char *directory = NULL;
@@ -106,7 +121,7 @@ int main(int argc, char *argv[]) {
         return 1;
     }
     
-    printf("Waiting for a client to connect...\n");
+    printf("Waiting for clients to connect...\n");
     client_addr_len = sizeof(client_addr);
 
     while (1) {
@@ -123,217 +138,31 @@ int main(int argc, char *argv[]) {
         
         printf("Client connected\n");
         
-        // Inner loop to handle multiple requests on same connection
-        int keep_connection_open = 1;
-        while (keep_connection_open) {
-            // Read the HTTP request
-            char read_buffer[1024];
-            memset(read_buffer, 0, sizeof(read_buffer));
-            int bytes_read = recv(client_fd, read_buffer, sizeof(read_buffer) - 1, 0);
-            
-            if (bytes_read <= 0) {
-                // Connection closed by client or error
-                if (bytes_read == 0) {
-                    printf("Connection closed by client\n");
-                } else {
-                    printf("Error reading from client: %d\n", bytes_read);
-                }
-                break;
-            }
-            
-            printf("Received request:\n%s\n", read_buffer);
-            
-            int supports_gzip = 0;
-            char *accept_encoding = strstr(read_buffer, "Accept-Encoding:");
-            if (accept_encoding) {
-                supports_gzip = check_gzip_support(accept_encoding);
-                if (supports_gzip) {
-                    printf("Client supports gzip compression\n");
-                }
-            }
-            
-            // Check if client wants to keep connection open
-            int will_keep_open = should_keep_connection_open(read_buffer);
-            const char* connection_header = will_keep_open ? "keep-alive" : "close";
-            
-            // Check if it's a GET request for root path
-            if (strstr(read_buffer, "GET / ") != NULL) {
-                // Send 200 OK response
-                const char* message = "Hello, World!";
-                char response[1024];
-                sprintf(response, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: %s\r\nContent-Length: %d\r\n\r\n%s", 
-                        connection_header, (int)strlen(message), message);
-                send(client_fd, response, strlen(response), 0);
-                printf("Sent root response\n");
-            } 
-            else if (strstr(read_buffer, "GET /user-agent") != NULL) {
-                // Extract User-Agent header
-                char* user_agent = strstr(read_buffer, "User-Agent: ");
-                if (user_agent) {
-                    user_agent += strlen("User-Agent: ");
-                    char* end_of_line = strstr(user_agent, "\r\n");
-                    if (end_of_line) {
-                        *end_of_line = '\0';  // Null-terminate the User-Agent string
-                    }
-                    
-                    // Send 200 OK response with User-Agent
-                    char response[1024];
-                    sprintf(response, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: %s\r\nContent-Length: %d\r\n\r\n%s", 
-                            connection_header, (int)strlen(user_agent), user_agent);
-                    send(client_fd, response, strlen(response), 0);
-                    printf("Sent User-Agent response: %s\n", user_agent);
-                } 
-            }
-            else if (strstr(read_buffer, "GET /echo/") != NULL) {
-                // Extract the string after /echo/
-                char *echo_start = strstr(read_buffer, "GET /echo/");
-                echo_start += strlen("GET /echo/");
-                char *echo_end = strstr(echo_start, " ");
-                if (echo_end) {
-                    *echo_end = '\0';  // Null-terminate the string
-                }
-                
-                char response[1024];
-                
-                if (supports_gzip) {
-                    // Compress the data
-                    char compressed[1024];
-                    int compressed_length = sizeof(compressed);
-                    
-                    if (gzip_compress(echo_start, strlen(echo_start), compressed, &compressed_length) == Z_OK) {
-                        // Compression successful
-                        int header_length = sprintf(response, 
-                            "HTTP/1.1 200 OK\r\n"
-                            "Content-Type: text/plain\r\n"
-                            "Content-Encoding: gzip\r\n"
-                            "Connection: %s\r\n"
-                            "Content-Length: %d\r\n\r\n", 
-                            connection_header, compressed_length);
-                        
-                        send(client_fd, response, header_length, 0);
-                        send(client_fd, compressed, compressed_length, 0);
-                        printf("Sent gzip compressed echo response: %s (%d -> %d bytes)\n", 
-                               echo_start, (int)strlen(echo_start), compressed_length);
-                    } else {
-                        // Compression failed, send uncompressed
-                        sprintf(response, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: %s\r\nContent-Length: %d\r\n\r\n%s", 
-                                connection_header, (int)strlen(echo_start), echo_start);
-                        send(client_fd, response, strlen(response), 0);
-                        printf("Compression failed, sent uncompressed echo response: %s\n", echo_start);
-                    }
-                } else {
-                    // Send uncompressed response
-                    sprintf(response, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: %s\r\nContent-Length: %d\r\n\r\n%s", 
-                            connection_header, (int)strlen(echo_start), echo_start);
-                    send(client_fd, response, strlen(response), 0);
-                    printf("Sent uncompressed echo response: %s\n", echo_start);
-                }
-            }
-            else if (strstr(read_buffer,"GET /files/")!=NULL) {
-                    char *name = strstr(read_buffer, "GET /files/");
-                    if (name) {
-                        name+=strlen("GET /files/");
-                        char *end = strstr(name, " ");
-                        if (end) {
-                            *end = '\0';  // Null-terminate the filename
-                        }
-                        // Open the requested file
-                        // Build full path first
-                            char filepath[512];
-                            sprintf(filepath, "%s/%s", directory, name);  // Now opens "/tmp/foo"
-                            FILE *file = fopen(filepath, "rb");
-                        if (file) {
-                            // Get file size
-                            fseek(file, 0, SEEK_END);
-                            long file_size = ftell(file);
-                            fseek(file, 0, SEEK_SET);
-                            char* file_content = malloc(file_size);
-                            fread(file_content, 1, file_size, file);
-                            char response[1024];
-                            sprintf(response, "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nConnection: %s\r\nContent-Length: %ld\r\n\r\n", 
-                                    connection_header, file_size);
-                            fclose(file);
-                            // Send file content
-                            send(client_fd, response, strlen(response), 0);  // Send headers
-                            send(client_fd, file_content, file_size, 0);   // Send raw file content
-                            free(file_content);
-                            printf("Sent file: %s\n", name);
-                        } else {
-                            // Send 404 Not Found response if file not found
-                            char not_found_response[1024];
-                            sprintf(not_found_response, "HTTP/1.1 404 Not Found\r\nConnection: %s\r\n\r\n", connection_header);
-                            send(client_fd, not_found_response, strlen(not_found_response), 0);
-                            printf("Sent 404 Not Found response for file: %s\n", name);
-                        }
-                    }
-                } 
-                else if (strstr(read_buffer, "POST /files/")!=NULL){
-                    char *filename_start = strstr(read_buffer, "POST /files/");
-                    if (filename_start){
-                        filename_start+= strlen("POST /files/");
-                        char *filename_end = strstr(filename_start, " ");
-                        if (filename_end) {
-                            *filename_end = '\0';  // Null-terminate the filename
-                        }
-                        // Extract the filename
-                        char *length_str = strstr(read_buffer, "Content-Length: ");
-                        int length = 0;
-                        if (length_str){
-                            length_str+= strlen("Content-Length: ");
-                            length = atoi(length_str);
-                        }
-                        printf("Content-Length: %d\n", length);
-                        
-                        // Finding request body
-                        char *body_start = strstr(read_buffer, "\r\n\r\n");
-                        if (body_start) {
-                            body_start+=4;
-                        }
-                        int body_read = bytes_read - (body_start - read_buffer);
-                        int remaining_length = length - body_read;
-                        char *body = malloc(length + 1);
-                        memcpy(body, body_start, body_read);
-                        if (remaining_length>0){
-                            int additional_byte = recv(client_fd, body + body_read, remaining_length, 0);
-                        }
-                        // Building the full path
-                        char filepath[512];
-                        sprintf(filepath, "%s/%s", directory, filename_start);  
-                        FILE *file = fopen(filepath, "wb");
-                        if (file){
-                            fwrite(body, 1, length, file);
-                            fclose(file);
-                            char response[1024];
-                            sprintf(response, "HTTP/1.1 201 Created\r\nConnection: %s\r\n\r\n", connection_header);
-                            send(client_fd, response, strlen(response), 0);
-                            printf("File created: %s\n", filepath);
-                        } else {
-                            char error_response[1024];
-                            sprintf(error_response, "HTTP/1.1 500 Internal Server Error\r\nConnection: %s\r\n\r\n", connection_header);
-                            send(client_fd, error_response, strlen(error_response), 0);
-                        }
-                        free(body);
-                    }
-                }
-                else {
-                    // Send 404 Not Found response
-                    char not_found_response[1024];
-                    sprintf(not_found_response, "HTTP/1.1 404 Not Found\r\nConnection: %s\r\n\r\n", connection_header);
-                    send(client_fd, not_found_response, strlen(not_found_response), 0);
-                    printf("Sent 404 Not Found response\n");
-                }
-            
-            // Set keep_connection_open based on our decision
-            keep_connection_open = will_keep_open;
-            
-            // Add appropriate Connection header based on decision
-            if (!keep_connection_open) {
-                printf("Will close connection after this response\n");
-            }
-        }
+        // Create thread data structure
+        client_data_t *client_data = malloc(sizeof(client_data_t));
+        client_data->client_fd = client_fd;
+        client_data->directory = directory;
         
-        printf("Closing connection\n");
-        close(client_fd);
+        // Create thread to handle client
+#ifdef _WIN32
+        HANDLE thread = CreateThread(NULL, 0, client_thread, client_data, 0, NULL);
+        if (thread == NULL) {
+            printf("Failed to create thread\n");
+            close(client_fd);
+            free(client_data);
+        } else {
+            CloseHandle(thread); // We don't need to wait for the thread
+        }
+#else
+        pthread_t thread;
+        if (pthread_create(&thread, NULL, client_thread, client_data) != 0) {
+            printf("Failed to create thread\n");
+            close(client_fd);
+            free(client_data);
+        } else {
+            pthread_detach(thread); // We don't need to wait for the thread
+        }
+#endif
     }
     
     close(server_fd);
@@ -343,6 +172,240 @@ int main(int argc, char *argv[]) {
 #endif
     
     return 0;
+}
+
+// Thread function to handle client connections
+#ifdef _WIN32
+DWORD WINAPI client_thread(LPVOID arg) {
+#else
+void* client_thread(void* arg) {
+#endif
+    client_data_t *data = (client_data_t*)arg;
+    handle_client_connection(data->client_fd, data->directory);
+    free(data);
+    
+#ifdef _WIN32
+    return 0;
+#else
+    return NULL;
+#endif
+}
+
+// Handle client connection with persistent connection support
+void handle_client_connection(int client_fd, char *directory) {
+    printf("Thread handling client connection\n");
+    
+    // Inner loop to handle multiple requests on same connection
+    int keep_connection_open = 1;
+    while (keep_connection_open) {
+        // Read the HTTP request
+        char read_buffer[1024];
+        memset(read_buffer, 0, sizeof(read_buffer));
+        int bytes_read = recv(client_fd, read_buffer, sizeof(read_buffer) - 1, 0);
+        
+        if (bytes_read <= 0) {
+            // Connection closed by client or error
+            if (bytes_read == 0) {
+                printf("Connection closed by client\n");
+            } else {
+                printf("Error reading from client: %d\n", bytes_read);
+            }
+            break;
+        }
+        
+        printf("Received request:\n%s\n", read_buffer);
+        
+        int supports_gzip = 0;
+        char *accept_encoding = strstr(read_buffer, "Accept-Encoding:");
+        if (accept_encoding) {
+            supports_gzip = check_gzip_support(accept_encoding);
+            if (supports_gzip) {
+                printf("Client supports gzip compression\n");
+            }
+        }
+        
+        // Check if client wants to keep connection open
+        int will_keep_open = should_keep_connection_open(read_buffer);
+        const char* connection_header = will_keep_open ? "keep-alive" : "close";
+        
+        // Check if it's a GET request for root path
+        if (strstr(read_buffer, "GET / ") != NULL) {
+            // Send 200 OK response
+            const char* message = "Hello, World!";
+            char response[1024];
+            sprintf(response, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: %s\r\nContent-Length: %d\r\n\r\n%s", 
+                    connection_header, (int)strlen(message), message);
+            send(client_fd, response, strlen(response), 0);
+            printf("Sent root response\n");
+        } 
+        else if (strstr(read_buffer, "GET /user-agent") != NULL) {
+            // Extract User-Agent header
+            char* user_agent = strstr(read_buffer, "User-Agent: ");
+            if (user_agent) {
+                user_agent += strlen("User-Agent: ");
+                char* end_of_line = strstr(user_agent, "\r\n");
+                if (end_of_line) {
+                    *end_of_line = '\0';  // Null-terminate the User-Agent string
+                }
+                
+                // Send 200 OK response with User-Agent
+                char response[1024];
+                sprintf(response, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: %s\r\nContent-Length: %d\r\n\r\n%s", 
+                        connection_header, (int)strlen(user_agent), user_agent);
+                send(client_fd, response, strlen(response), 0);
+                printf("Sent User-Agent response: %s\n", user_agent);
+            } 
+        }
+        else if (strstr(read_buffer, "GET /echo/") != NULL) {
+            // Extract the string after /echo/
+            char *echo_start = strstr(read_buffer, "GET /echo/");
+            echo_start += strlen("GET /echo/");
+            char *echo_end = strstr(echo_start, " ");
+            if (echo_end) {
+                *echo_end = '\0';  // Null-terminate the string
+            }
+            
+            char response[1024];
+            
+            if (supports_gzip) {
+                // Compress the data
+                char compressed[1024];
+                int compressed_length = sizeof(compressed);
+                
+                if (gzip_compress(echo_start, strlen(echo_start), compressed, &compressed_length) == Z_OK) {
+                    // Compression successful
+                    int header_length = sprintf(response, 
+                        "HTTP/1.1 200 OK\r\n"
+                        "Content-Type: text/plain\r\n"
+                        "Content-Encoding: gzip\r\n"
+                        "Connection: %s\r\n"
+                        "Content-Length: %d\r\n\r\n", 
+                        connection_header, compressed_length);
+                    
+                    send(client_fd, response, header_length, 0);
+                    send(client_fd, compressed, compressed_length, 0);
+                    printf("Sent gzip compressed echo response: %s (%d -> %d bytes)\n", 
+                           echo_start, (int)strlen(echo_start), compressed_length);
+                } else {
+                    // Compression failed, send uncompressed
+                    sprintf(response, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: %s\r\nContent-Length: %d\r\n\r\n%s", 
+                            connection_header, (int)strlen(echo_start), echo_start);
+                    send(client_fd, response, strlen(response), 0);
+                    printf("Compression failed, sent uncompressed echo response: %s\n", echo_start);
+                }
+            } else {
+                // Send uncompressed response
+                sprintf(response, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: %s\r\nContent-Length: %d\r\n\r\n%s", 
+                        connection_header, (int)strlen(echo_start), echo_start);
+                send(client_fd, response, strlen(response), 0);
+                printf("Sent uncompressed echo response: %s\n", echo_start);
+            }
+        }
+        else if (strstr(read_buffer,"GET /files/")!=NULL) {
+                char *name = strstr(read_buffer, "GET /files/");
+                if (name) {
+                    name+=strlen("GET /files/");
+                    char *end = strstr(name, " ");
+                    if (end) {
+                        *end = '\0';  // Null-terminate the filename
+                    }
+                    // Open the requested file
+                    // Build full path first
+                        char filepath[512];
+                        sprintf(filepath, "%s/%s", directory, name);  // Now opens "/tmp/foo"
+                        FILE *file = fopen(filepath, "rb");
+                    if (file) {
+                        // Get file size
+                        fseek(file, 0, SEEK_END);
+                        long file_size = ftell(file);
+                        fseek(file, 0, SEEK_SET);
+                        char* file_content = malloc(file_size);
+                        fread(file_content, 1, file_size, file);
+                        char response[1024];
+                        sprintf(response, "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nConnection: %s\r\nContent-Length: %ld\r\n\r\n", 
+                                connection_header, file_size);
+                        fclose(file);
+                        // Send file content
+                        send(client_fd, response, strlen(response), 0);  // Send headers
+                        send(client_fd, file_content, file_size, 0);   // Send raw file content
+                        free(file_content);
+                        printf("Sent file: %s\n", name);
+                    } else {
+                        // Send 404 Not Found response if file not found
+                        char not_found_response[1024];
+                        sprintf(not_found_response, "HTTP/1.1 404 Not Found\r\nConnection: %s\r\n\r\n", connection_header);
+                        send(client_fd, not_found_response, strlen(not_found_response), 0);
+                        printf("Sent 404 Not Found response for file: %s\n", name);
+                    }
+                }
+            } 
+            else if (strstr(read_buffer, "POST /files/")!=NULL){
+                char *filename_start = strstr(read_buffer, "POST /files/");
+                if (filename_start){
+                    filename_start+= strlen("POST /files/");
+                    char *filename_end = strstr(filename_start, " ");
+                    if (filename_end) {
+                        *filename_end = '\0';  // Null-terminate the filename
+                    }
+                    // Extract the filename
+                    char *length_str = strstr(read_buffer, "Content-Length: ");
+                    int length = 0;
+                    if (length_str){
+                        length_str+= strlen("Content-Length: ");
+                        length = atoi(length_str);
+                    }
+                    printf("Content-Length: %d\n", length);
+                    
+                    // Finding request body
+                    char *body_start = strstr(read_buffer, "\r\n\r\n");
+                    if (body_start) {
+                        body_start+=4;
+                    }
+                    int body_read = bytes_read - (body_start - read_buffer);
+                    int remaining_length = length - body_read;
+                    char *body = malloc(length + 1);
+                    memcpy(body, body_start, body_read);
+                    if (remaining_length>0){
+                        int additional_byte = recv(client_fd, body + body_read, remaining_length, 0);
+                    }
+                    // Building the full path
+                    char filepath[512];
+                    sprintf(filepath, "%s/%s", directory, filename_start);  
+                    FILE *file = fopen(filepath, "wb");
+                    if (file){
+                        fwrite(body, 1, length, file);
+                        fclose(file);
+                        char response[1024];
+                        sprintf(response, "HTTP/1.1 201 Created\r\nConnection: %s\r\n\r\n", connection_header);
+                        send(client_fd, response, strlen(response), 0);
+                        printf("File created: %s\n", filepath);
+                    } else {
+                        char error_response[1024];
+                        sprintf(error_response, "HTTP/1.1 500 Internal Server Error\r\nConnection: %s\r\n\r\n", connection_header);
+                        send(client_fd, error_response, strlen(error_response), 0);
+                    }
+                    free(body);
+                }
+            }
+            else {
+                // Send 404 Not Found response
+                char not_found_response[1024];
+                sprintf(not_found_response, "HTTP/1.1 404 Not Found\r\nConnection: %s\r\n\r\n", connection_header);
+                send(client_fd, not_found_response, strlen(not_found_response), 0);
+                printf("Sent 404 Not Found response\n");
+            }
+        
+        // Set keep_connection_open based on our decision
+        keep_connection_open = will_keep_open;
+        
+        // Add appropriate Connection header based on decision
+        if (!keep_connection_open) {
+            printf("Will close connection after this response\n");
+        }
+    }
+    
+    printf("Closing connection\n");
+    close(client_fd);
 }
 
 // Check if gzip is in the comma-separated list

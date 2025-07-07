@@ -1,5 +1,5 @@
 @echo off
-echo Simple HTTP Server Builder
+echo Multi-threaded HTTP Server Builder
 echo.
 
 REM Generate random executable name to avoid conflicts
@@ -8,36 +8,27 @@ set "EXEC_NAME=httpserver_%RAND%.exe"
 
 echo Compiling with name: %EXEC_NAME%
 
-REM Direct compilation in one step
-"C:\MinGW\bin\gcc.exe" -std=c11 src\main.c -o %EXEC_NAME% -lws2_32 -lwsock32
+REM Direct compilation in one step with threading support
+"C:\MinGW\bin\gcc.exe" -std=c11 src\main.c -o %EXEC_NAME% -lws2_32 -lwsock32 -lz
 
 if %errorlevel% neq 0 (
     echo.
-    echo Build failed! Let me try a different approach...
+    echo Build failed! Let me try without zlib...
     echo.
     
-    REM Try two-step compilation
-    "C:\MinGW\bin\gcc.exe" -std=c11 -c src\main.c -o temp.o
+    REM Try without zlib
+    "C:\MinGW\bin\gcc.exe" -std=c11 src\main.c -o %EXEC_NAME% -lws2_32 -lwsock32
     if %errorlevel% neq 0 (
         echo Source compilation failed!
         pause
         exit /b 1
     )
-    
-    "C:\MinGW\bin\gcc.exe" temp.o -o %EXEC_NAME% -lws2_32 -lwsock32
-    if %errorlevel% neq 0 (
-        echo Linking failed!
-        del temp.o >nul 2>&1
-        pause
-        exit /b 1
-    )
-    
-    del temp.o >nul 2>&1
 )
 
 echo.
 echo ✅ Build successful! 
-echo ✅ Starting server on port 4221...
+echo ✅ Starting multi-threaded server on port 4221...
+echo ✅ Server now supports concurrent connections!
 echo ✅ Press Ctrl+C to stop
 echo.
 
