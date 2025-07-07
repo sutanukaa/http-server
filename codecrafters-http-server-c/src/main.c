@@ -19,6 +19,7 @@
 
 int check_gzip_support(char *accept_encoding_line);
 int gzip_compress(const char* input, int input_len, char* output, int* output_len);
+int should_keep_connection_open(char *request);
 
 int main(int argc, char *argv[]) {
     char *directory = NULL;
@@ -26,28 +27,27 @@ int main(int argc, char *argv[]) {
         if(strcmp(argv[i], "--directory")==0){
             if (i + 1 < argc) {
                 directory = argv[i + 1];
-                i++; // Skip the next argument as it's the directory path
+                i++; 
             } 
         }
     }
     if (directory==NULL) {
-        directory = "/tmp"; // Default directory if not provided
+        directory = "/tmp"; 
     }
-    // Print the directory to verify
+    
     printf("Using directory: %s\n", directory);
 
 
-    // Disable output buffering
+    
     setbuf(stdout, NULL);
     setbuf(stderr, NULL);
 
-    // You can use print statements as follows for debugging, they'll be visible when running tests.
+    
     printf("Logs from your program will appear here!\n");
     printf("Hello, World!\n");
-    // send(id, "HTTP/1.1 200 OK\r\n\r\n", 28, 0);
-
+    
 #ifdef _WIN32
-    // Initialize Winsock on Windows
+    
     WSADATA wsaData;
     if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
         fprintf(stderr, "WSAStartup failed\n");
@@ -55,7 +55,7 @@ int main(int argc, char *argv[]) {
     }
 #endif
 
-    // Uncomment this block to pass the first stage
+
     
     int server_fd;
     socklen_t client_addr_len;
@@ -71,8 +71,6 @@ int main(int argc, char *argv[]) {
         return 1;
     }
     
-    // Since the tester restarts your program quite often, setting SO_REUSEADDR
-    // ensures that we don't run into 'Address already in use' errors
     int reuse = 1;
     if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, (const char*)&reuse, sizeof(reuse)) < 0) {
 #ifdef _WIN32
@@ -111,26 +109,38 @@ int main(int argc, char *argv[]) {
     printf("Waiting for a client to connect...\n");
     client_addr_len = sizeof(client_addr);
 
-    while (1){
-
-    int client_fd = accept(server_fd, (struct sockaddr *) &client_addr, &client_addr_len);
-    if (client_fd < 0) {
+    while (1) {
+        int client_fd = accept(server_fd, (struct sockaddr *) &client_addr, &client_addr_len);
+        if (client_fd < 0) {
 #ifdef _WIN32
-        printf("Accept failed: %d\n", WSAGetLastError());
-        continue;
+            printf("Accept failed: %d\n", WSAGetLastError());
+            continue;
 #else
-        printf("Accept failed: %s\n", strerror(errno));
-        continue;
+            printf("Accept failed: %s\n", strerror(errno));
+            continue;
 #endif
-    } else {
+        }
+        
         printf("Client connected\n");
         
-        // Read the HTTP request
-        char read_buffer[1024];
-        memset(read_buffer, 0, sizeof(read_buffer));
-        int bytes_read = recv(client_fd, read_buffer, sizeof(read_buffer) - 1, 0);
-        
-        if (bytes_read > 0) {
+        // Inner loop to handle multiple requests on same connection
+        int keep_connection_open = 1;
+        while (keep_connection_open) {
+            // Read the HTTP request
+            char read_buffer[1024];
+            memset(read_buffer, 0, sizeof(read_buffer));
+            int bytes_read = recv(client_fd, read_buffer, sizeof(read_buffer) - 1, 0);
+            
+            if (bytes_read <= 0) {
+                // Connection closed by client or error
+                if (bytes_read == 0) {
+                    printf("Connection closed by client\n");
+                } else {
+                    printf("Error reading from client: %d\n", bytes_read);
+                }
+                break;
+            }
+            
             printf("Received request:\n%s\n", read_buffer);
             
             int supports_gzip = 0;
@@ -142,13 +152,19 @@ int main(int argc, char *argv[]) {
                 }
             }
             
+            // Check if client wants to keep connection open
+            int will_keep_open = should_keep_connection_open(read_buffer);
+            const char* connection_header = will_keep_open ? "keep-alive" : "close";
+            
             // Check if it's a GET request for root path
             if (strstr(read_buffer, "GET / ") != NULL) {
                 // Send 200 OK response
                 const char* message = "Hello, World!";
-char response[1024];
-sprintf(response, "HTTP/1.1 200 OK\r\n\r\n%s", message);
-send(client_fd, response, strlen(response), 0);
+                char response[1024];
+                sprintf(response, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: %s\r\nContent-Length: %d\r\n\r\n%s", 
+                        connection_header, (int)strlen(message), message);
+                send(client_fd, response, strlen(response), 0);
+                printf("Sent root response\n");
             } 
             else if (strstr(read_buffer, "GET /user-agent") != NULL) {
                 // Extract User-Agent header
@@ -162,7 +178,8 @@ send(client_fd, response, strlen(response), 0);
                     
                     // Send 200 OK response with User-Agent
                     char response[1024];
-                    sprintf(response, "HTTP/1.1 200 OK\r\n\r\n%s", user_agent);
+                    sprintf(response, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: %s\r\nContent-Length: %d\r\n\r\n%s", 
+                            connection_header, (int)strlen(user_agent), user_agent);
                     send(client_fd, response, strlen(response), 0);
                     printf("Sent User-Agent response: %s\n", user_agent);
                 } 
@@ -189,8 +206,9 @@ send(client_fd, response, strlen(response), 0);
                             "HTTP/1.1 200 OK\r\n"
                             "Content-Type: text/plain\r\n"
                             "Content-Encoding: gzip\r\n"
+                            "Connection: %s\r\n"
                             "Content-Length: %d\r\n\r\n", 
-                            compressed_length);
+                            connection_header, compressed_length);
                         
                         send(client_fd, response, header_length, 0);
                         send(client_fd, compressed, compressed_length, 0);
@@ -198,15 +216,15 @@ send(client_fd, response, strlen(response), 0);
                                echo_start, (int)strlen(echo_start), compressed_length);
                     } else {
                         // Compression failed, send uncompressed
-                        sprintf(response, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s", 
-                                (int)strlen(echo_start), echo_start);
+                        sprintf(response, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: %s\r\nContent-Length: %d\r\n\r\n%s", 
+                                connection_header, (int)strlen(echo_start), echo_start);
                         send(client_fd, response, strlen(response), 0);
                         printf("Compression failed, sent uncompressed echo response: %s\n", echo_start);
                     }
                 } else {
                     // Send uncompressed response
-                    sprintf(response, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s", 
-                            (int)strlen(echo_start), echo_start);
+                    sprintf(response, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: %s\r\nContent-Length: %d\r\n\r\n%s", 
+                            connection_header, (int)strlen(echo_start), echo_start);
                     send(client_fd, response, strlen(response), 0);
                     printf("Sent uncompressed echo response: %s\n", echo_start);
                 }
@@ -232,7 +250,8 @@ send(client_fd, response, strlen(response), 0);
                             char* file_content = malloc(file_size);
                             fread(file_content, 1, file_size, file);
                             char response[1024];
-                            sprintf(response, "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: %ld\r\n\r\n", file_size);
+                            sprintf(response, "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nConnection: %s\r\nContent-Length: %ld\r\n\r\n", 
+                                    connection_header, file_size);
                             fclose(file);
                             // Send file content
                             send(client_fd, response, strlen(response), 0);  // Send headers
@@ -241,7 +260,8 @@ send(client_fd, response, strlen(response), 0);
                             printf("Sent file: %s\n", name);
                         } else {
                             // Send 404 Not Found response if file not found
-                            const char* not_found_response = "HTTP/1.1 404 Not Found\r\n\r\n";
+                            char not_found_response[1024];
+                            sprintf(not_found_response, "HTTP/1.1 404 Not Found\r\nConnection: %s\r\n\r\n", connection_header);
                             send(client_fd, not_found_response, strlen(not_found_response), 0);
                             printf("Sent 404 Not Found response for file: %s\n", name);
                         }
@@ -283,42 +303,38 @@ send(client_fd, response, strlen(response), 0);
                         if (file){
                             fwrite(body, 1, length, file);
                             fclose(file);
-                            const char* response = "HTTP/1.1 201 Created\r\n\r\n";
+                            char response[1024];
+                            sprintf(response, "HTTP/1.1 201 Created\r\nConnection: %s\r\n\r\n", connection_header);
                             send(client_fd, response, strlen(response), 0);
                             printf("File created: %s\n", filepath);
                         } else {
-                            const char* error_response = "HTTP/1.1 500 Internal Server Error\r\n\r\n";
+                            char error_response[1024];
+                            sprintf(error_response, "HTTP/1.1 500 Internal Server Error\r\nConnection: %s\r\n\r\n", connection_header);
                             send(client_fd, error_response, strlen(error_response), 0);
                         }
                         free(body);
                     }
                 }
-
-
-
-
-
-                
                 else {
-                    // Send 404 Not Found response if User-Agent not found
-                    const char* not_found_response = "HTTP/1.1 404 Not Found\r\n\r\n";
+                    // Send 404 Not Found response
+                    char not_found_response[1024];
+                    sprintf(not_found_response, "HTTP/1.1 404 Not Found\r\nConnection: %s\r\n\r\n", connection_header);
                     send(client_fd, not_found_response, strlen(not_found_response), 0);
                     printf("Sent 404 Not Found response\n");
                 }
-            }
             
+            // Set keep_connection_open based on our decision
+            keep_connection_open = will_keep_open;
             
-            else {
-                // Send 404 Not Found response
-                const char* not_found_response = "HTTP/1.1 404 Not Found\r\n\r\n";
-                send(client_fd, not_found_response, strlen(not_found_response), 0);
-                printf("Sent 404 Not Found response\n");
+            // Add appropriate Connection header based on decision
+            if (!keep_connection_open) {
+                printf("Will close connection after this response\n");
             }
         }
         
+        printf("Closing connection\n");
         close(client_fd);
     }
-}
     
     close(server_fd);
 
@@ -399,4 +415,40 @@ int gzip_compress(const char* input, int input_len, char* output, int* output_le
     *output_len = *output_len - strm.avail_out;
     deflateEnd(&strm);
     return Z_OK;
+}
+
+int should_keep_connection_open(char *request) {
+    // Check HTTP version first
+    int is_http_11 = (strstr(request, "HTTP/1.1") != NULL);
+    
+    // Check for Connection header
+    char *connection_header = strstr(request, "Connection:");
+    if (connection_header) {
+        // Move past "Connection:" and any whitespace
+        connection_header += strlen("Connection:");
+        while (*connection_header == ' ' || *connection_header == '\t') {
+            connection_header++;
+        }
+        
+        // Check if it contains "close"
+        if (strncmp(connection_header, "close", 5) == 0) {
+            char next_char = *(connection_header + 5);
+            if (next_char == '\r' || next_char == '\n' || next_char == ' ' || 
+                next_char == '\t' || next_char == '\0') {
+                return 0; // Close connection
+            }
+        }
+        
+        // Check if it contains "keep-alive"
+        if (strncmp(connection_header, "keep-alive", 10) == 0) {
+            char next_char = *(connection_header + 10);
+            if (next_char == '\r' || next_char == '\n' || next_char == ' ' || 
+                next_char == '\t' || next_char == '\0') {
+                return 1; // Keep connection open
+            }
+        }
+    }
+    
+    // Default behavior: keep connection open for HTTP/1.1, close for HTTP/1.0
+    return is_http_11 ? 1 : 0;
 }
